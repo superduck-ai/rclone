@@ -339,6 +339,37 @@ func (vfs *VFS) Stats() (out rc.Params) {
 	return out
 }
 
+// DrainStatus reports work which must finish before a clean unmount.
+type DrainStatus struct {
+	ActiveWriters        int
+	CacheItemsInUse      int
+	UploadsInProgress    int
+	UploadsQueued        int
+	ErroredFiles         int
+	WriteBackErrors      uint64
+	WriteBackFailedFiles int
+	BytesUsed            int64
+	OutOfSpace           bool
+}
+
+// DrainStatus returns the current writer and writeback state.
+func (vfs *VFS) DrainStatus() (status DrainStatus) {
+	status.ActiveWriters = vfs.root.countActiveWriters()
+	if vfs.cache == nil {
+		return status
+	}
+	status.CacheItemsInUse = vfs.cache.TotalInUse()
+	cacheStats := vfs.cache.Stats()
+	status.UploadsInProgress, _ = cacheStats["uploadsInProgress"].(int)
+	status.UploadsQueued, _ = cacheStats["uploadsQueued"].(int)
+	status.ErroredFiles, _ = cacheStats["erroredFiles"].(int)
+	status.WriteBackErrors, _ = cacheStats["uploadErrors"].(uint64)
+	status.WriteBackFailedFiles, _ = cacheStats["uploadFailedFiles"].(int)
+	status.BytesUsed, _ = cacheStats["bytesUsed"].(int64)
+	status.OutOfSpace, _ = cacheStats["outOfSpace"].(bool)
+	return status
+}
+
 // Return the number of active cache entries and a VFS if any are in
 // the cache.
 func activeCacheEntries() (vfs *VFS, count int) {

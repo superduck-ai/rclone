@@ -102,6 +102,7 @@ require (
 	golang.org/x/text v0.40.0
 	golang.org/x/time v0.15.0
 	google.golang.org/api v0.279.0
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/validator.v2 v2.0.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -262,7 +263,6 @@ require (
 	golang.org/x/tools v0.48.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/grpc v1.80.0 // indirect - v1.81.0 and later fail to compile on plan9 - don't upgrade until fixed upstream
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect

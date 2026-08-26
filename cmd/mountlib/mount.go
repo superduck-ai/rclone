@@ -194,6 +194,7 @@ type Options struct {
 	AsyncRead          bool          `config:"async_read"`
 	NetworkMode        bool          `config:"network_mode"` // Windows only
 	DirectIO           bool          `config:"direct_io"`    // use Direct IO for file access
+	DirectMountStrict  bool          `config:"-"`            // use direct kernel mount and never run fusermount
 	CaseInsensitive    fs.Tristate   `config:"mount_case_insensitive"`
 }
 
@@ -384,6 +385,7 @@ func (m *MountPoint) Mount() (mountDaemon *os.Process, err error) {
 	var actualMountpoint string
 	m.ErrChan, m.UnmountFn, actualMountpoint, err = m.MountFn(m.VFS, m.MountPoint, &m.MountOpt)
 	if err != nil {
+		m.VFS.Shutdown()
 		if len(os.Args) > 0 && strings.HasPrefix(os.Args[0], "/snap/") {
 			return nil, fmt.Errorf("mounting is not supported when running from snap")
 		}

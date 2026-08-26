@@ -52,7 +52,13 @@ var (
 	errorCommandNotFound    = errors.New("command not found")
 	errorNotEnoughArguments = errors.New("not enough arguments")
 	errorTooManyArguments   = errors.New("too many arguments")
+	beforeRCStartChecks     []func() error
 )
+
+// AddBeforeRCStartCheck registers a validation which runs before RC listeners start.
+func AddBeforeRCStartCheck(check func() error) {
+	beforeRCStartChecks = append(beforeRCStartChecks, check)
+}
 
 // ShowVersion prints the version to stdout
 func ShowVersion() {
@@ -422,6 +428,11 @@ func initConfig() {
 	}
 
 	// Start the remote control server if configured
+	for _, check := range beforeRCStartChecks {
+		if err = check(); err != nil {
+			fs.Fatalf(nil, "Invalid remote control configuration: %v", err)
+		}
+	}
 	_, err = rcserver.Start(ctx, &rc.Opt)
 	if err != nil {
 		fs.Fatalf(nil, "Failed to start remote control: %v", err)

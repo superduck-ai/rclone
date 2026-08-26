@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"slices"
@@ -599,12 +600,105 @@ func TestDirRename(t *testing.T) {
 	assert.True(t, ok, "dir.parent.items should have 'dir2' key before rename")
 	_, ok = dir.parent.items["dir3"]
 	assert.False(t, ok, "dir.parent.items should not have 'dir3' key before rename")
+	require.NoError(t, operations.DirMove(context.Background(), r.Fremote, "dir2", "dir3"))
 	dir.renameTree("dir3") // rename dir2 to dir3
 	_, ok = dir.parent.items["dir2"]
 	assert.False(t, ok, "dir.parent.items should not have 'dir2' key after rename")
 	d, ok := dir.parent.items["dir3"]
 	assert.True(t, ok, fmt.Sprintf("expected to find 'dir3' key in dir.parent.items after rename, got %v", dir.parent.items))
 	assert.Equal(t, dir, d, `expected renamed dir to match value of dir.parent.items["dir3"]`)
+}
+
+func TestFileRenameDirRefreshesObject(t *testing.T) {
+	r, vfs := newTestVFS(t)
+	r.WriteObject(context.Background(), "old/value.txt", "renamed contents", t1)
+	node, err := vfs.Stat("old/value.txt")
+	require.NoError(t, err)
+	file := node.(*File)
+	root, err := vfs.Root()
+	require.NoError(t, err)
+	baseFs := file.d.f
+	refreshes := 0
+	file.d.f = &newObjectHookFs{
+		Fs: baseFs,
+		newObject: func(ctx context.Context, remote string) (fs.Object, error) {
+			refreshes++
+			if refreshes == 1 {
+				return nil, fmt.Errorf("temporary metadata failure")
+			}
+			return baseFs.NewObject(ctx, remote)
+		},
+	}
+
+	require.NoError(t, root.Rename("old", "new", root))
+	handle, err := file.Open(os.O_RDONLY)
+	require.NoError(t, err)
+	contents, err := io.ReadAll(handle)
+	require.NoError(t, err)
+	require.NoError(t, handle.Close())
+	assert.Equal(t, "renamed contents", string(contents))
+	assert.Equal(t, 2, refreshes)
+}
+
+type newObjectHookFs struct {
+	fs.Fs
+	newObject func(context.Context, string) (fs.Object, error)
+}
+
+func (f *newObjectHookFs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
+	return f.newObject(ctx, remote)
+}
+
+func TestFileRenameDirRefreshesOutsideDirectoryLock(t *testing.T) {
+	r, vfs := newTestVFS(t)
+	r.WriteObject(context.Background(), "old/value.txt", "renamed contents", t1)
+	node, err := vfs.Stat("old/value.txt")
+	require.NoError(t, err)
+	file := node.(*File)
+	dir := file.d
+	require.NoError(t, operations.DirMove(context.Background(), r.Fremote, "old", "new"))
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	baseFs := dir.f
+	dir.f = &newObjectHookFs{
+		Fs: baseFs,
+		newObject: func(ctx context.Context, remote string) (fs.Object, error) {
+			close(started)
+			<-release
+			return baseFs.NewObject(ctx, remote)
+		},
+	}
+	done := make(chan struct{})
+	go func() {
+		dir.renameTree("new")
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("object refresh did not start")
+	}
+
+	pathDone := make(chan string, 1)
+	go func() { pathDone <- dir.Path() }()
+	var (
+		gotPath  string
+		unlocked bool
+	)
+	select {
+	case gotPath = <-pathDone:
+		unlocked = true
+	case <-time.After(time.Second):
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("directory rename did not finish")
+	}
+	assert.True(t, unlocked, "directory lock was held during object refresh")
+	assert.Equal(t, "new", gotPath)
 }
 
 func TestDirStructSize(t *testing.T) {

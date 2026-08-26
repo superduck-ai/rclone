@@ -55,6 +55,7 @@ type File struct {
 	virtualModTime   *time.Time                      // modtime for backends with Precision == fs.ModTimeNotSupported
 	pendingModTime   time.Time                       // will be applied once o becomes available, i.e. after file was written
 	pendingRenameFun func(ctx context.Context) error // will be run/renamed after all writers close
+	pendingObject    string                          // new remote awaiting object refresh after a directory rename
 	sys              atomic.Value                    // user defined info to be attached here
 	nwriters         atomic.Int32                    // len(writers)
 	appendMode       bool                            // file was opened with O_APPEND
@@ -204,11 +205,42 @@ func (f *File) Node() Node {
 	return f
 }
 
-// renameDir - call when parent directory has been renamed
-func (f *File) renameDir(dPath string) {
-	f.mu.RLock()
+// renameDir updates the path after the parent directory has been renamed.
+// It returns whether the object needs refreshing after directory locks are released.
+func (f *File) renameDir(dPath string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.dPath = dPath
+	if f._writingInProgress() {
+		return false
+	}
+	f.pendingObject = f._cachePath()
+	return true
+}
+
+// refreshObject refreshes an object invalidated by a parent directory rename.
+// Remote calls are made without holding File or Dir locks.
+func (f *File) refreshObject() {
+	f.mu.RLock()
+	remote := f.pendingObject
+	d := f.d
 	f.mu.RUnlock()
+	if remote == "" {
+		return
+	}
+
+	newObject, err := d.Fs().NewObject(f.ctx, remote)
+	if err != nil {
+		fs.Errorf(f, "Failed to refresh object after directory rename: %v", err)
+		return
+	}
+	f.mu.Lock()
+	if !f._writingInProgress() && f.pendingObject == remote {
+		f.o = newObject
+		f.pendingObject = ""
+		f._setIsLink()
+	}
+	f.mu.Unlock()
 }
 
 // applyPendingRename runs a previously set rename operation if there are no
@@ -231,6 +263,7 @@ func (f *File) applyPendingRename() {
 // Otherwise it will queue the rename operation on the remote until no writers
 // remain.
 func (f *File) rename(ctx context.Context, destDir *Dir, newName string) error {
+	f.refreshObject()
 	f.mu.RLock()
 	d := f.d
 	oldPendingRenameFun := f.pendingRenameFun
@@ -456,6 +489,7 @@ func (f *File) Size() int64 {
 //
 // if NoModTime is set then it does nothing
 func (f *File) SetModTime(modTime time.Time) error {
+	f.refreshObject()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.d.vfs.Opt.NoModTime {
@@ -544,6 +578,7 @@ func (f *File) setSize(n int64) {
 func (f *File) setObject(o fs.Object) {
 	f.mu.Lock()
 	f.o = o
+	f.pendingObject = ""
 	f._setIsLink()
 	_ = f._applyPendingModTime()
 	d := f.d
@@ -558,6 +593,7 @@ func (f *File) setObject(o fs.Object) {
 func (f *File) setObjectNoUpdate(o fs.Object) {
 	f.mu.Lock()
 	f.o = o
+	f.pendingObject = ""
 	f._setIsLink()
 	f.virtualModTime = nil
 	fs.Debugf(f._path(), "Reset virtual modtime")
@@ -566,6 +602,7 @@ func (f *File) setObjectNoUpdate(o fs.Object) {
 
 // Get the current fs.Object - may be nil
 func (f *File) getObject() fs.Object {
+	f.refreshObject()
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.o
@@ -667,6 +704,7 @@ func (f *File) Sync() error {
 // Remove the file
 func (f *File) Remove() (err error) {
 	defer log.Trace(f.Path(), "")("err=%v", &err)
+	f.refreshObject()
 	f.mu.RLock()
 	d := f.d
 	f.mu.RUnlock()
@@ -713,6 +751,7 @@ func (f *File) RemoveAll() error {
 
 // DirEntry returns the underlying fs.DirEntry - may be nil
 func (f *File) DirEntry() (entry fs.DirEntry) {
+	f.refreshObject()
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.o

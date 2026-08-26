@@ -195,6 +195,19 @@ func TestCacheNew(t *testing.T) {
 	c.clean(false)
 }
 
+func TestCacheNewWithPerVFSRoot(t *testing.T) {
+	cacheDir := t.TempDir()
+	opt := vfscommon.Opt
+	opt.CacheDir = cacheDir
+	opt.CachePollInterval = 0
+	_, c := newTestCacheOpt(t, opt)
+
+	relative, err := filepath.Rel(cacheDir, c.root)
+	require.NoError(t, err)
+	assert.NotEqual(t, "..", relative)
+	assert.NotContains(t, relative, ".."+string(filepath.Separator))
+}
+
 func TestCacheOpens(t *testing.T) {
 	_, c := newTestCache(t)
 
@@ -730,6 +743,8 @@ func TestCacheStats(t *testing.T) {
 	assert.Equal(t, 0, out["files"])
 	assert.Equal(t, 0, out["uploadsInProgress"])
 	assert.Equal(t, 0, out["uploadsQueued"])
+	assert.Equal(t, uint64(0), out["uploadErrors"])
+	assert.Equal(t, 0, out["uploadFailedFiles"])
 }
 
 func TestCacheQueue(t *testing.T) {

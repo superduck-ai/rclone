@@ -1,0 +1,23 @@
+backend: rclone-filestore
+name: Filestore
+tier: Tier 3
+maintainers: External
+features_score: 2
+integration_tests: Pending
+data_integrity: Size
+performance: Medium
+adoption: Experimental
+docs: Limited
+security: Medium
+virtual: false
+remote: .
+features:
+- CanHaveEmptyDirectories
+- Copy
+- DirMove
+- Move
+- PutStream
+- ReadMimeType
+hashes:
+- MD5
+precision: 1

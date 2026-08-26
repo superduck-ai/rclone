@@ -334,6 +334,8 @@ func TestWriteBackAddFailRetry(t *testing.T) {
 
 	pi.finish(errors.New("transfer failed BOOM"))
 	waitUntilNoTransfers(t, wb)
+	assert.Equal(t, uint64(1), wb.Failures())
+	assert.Equal(t, 1, wb.Failed())
 	checkOnHeap(t, wb, wbItem)
 	checkInLookup(t, wb, wbItem)
 
@@ -344,6 +346,8 @@ func TestWriteBackAddFailRetry(t *testing.T) {
 
 	pi.finish(nil) // transfer successful
 	waitUntilNoTransfers(t, wb)
+	assert.Equal(t, uint64(1), wb.Failures())
+	assert.Equal(t, 0, wb.Failed())
 	checkNotOnHeap(t, wb, wbItem)
 	checkNotInLookup(t, wb, wbItem)
 }

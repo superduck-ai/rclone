@@ -30,14 +30,16 @@ type WriteBack struct {
 	// read and written with atomic, must be 64-bit aligned
 	id Handle // id of the last writeBackItem created
 
-	ctx     context.Context
-	mu      sync.Mutex
-	items   writeBackItems            // priority queue of *writeBackItem - writeBackItems are in here while awaiting transfer only
-	lookup  map[Handle]*writeBackItem // for getting a *writeBackItem from a Handle - writeBackItems are in here until cancelled
-	opt     *vfscommon.Options        // VFS options
-	timer   *time.Timer               // next scheduled time for the uploader
-	expiry  time.Time                 // time the next item expires or IsZero
-	uploads int                       // number of uploads in progress
+	ctx      context.Context
+	mu       sync.Mutex
+	items    writeBackItems            // priority queue of *writeBackItem - writeBackItems are in here while awaiting transfer only
+	lookup   map[Handle]*writeBackItem // for getting a *writeBackItem from a Handle - writeBackItems are in here until cancelled
+	opt      *vfscommon.Options        // VFS options
+	timer    *time.Timer               // next scheduled time for the uploader
+	expiry   time.Time                 // time the next item expires or IsZero
+	uploads  int                       // number of uploads in progress
+	failed   int                       // number of items whose latest upload attempt failed
+	failures atomic.Uint64             // cumulative non-cancellation upload failures
 }
 
 // New make a new WriteBack
@@ -74,6 +76,7 @@ type writeBackItem struct {
 	putFn     PutFn              // To write the object data
 	tries     int                // number of times we have tried to upload
 	delay     time.Duration      // delay between upload attempts
+	failed    bool               // latest non-cancellation upload attempt failed
 }
 
 // A writeBackItems implements a priority queue by implementing
@@ -162,6 +165,10 @@ func (wb *WriteBack) _addItem(wbItem *writeBackItem) {
 //
 // call with the lock held
 func (wb *WriteBack) _delItem(wbItem *writeBackItem) {
+	if wbItem.failed {
+		wb.failed--
+		wbItem.failed = false
+	}
 	delete(wb.lookup, wbItem.id)
 }
 
@@ -371,6 +378,11 @@ func (wb *WriteBack) upload(ctx context.Context, wbItem *writeBackItem) {
 			// Upload was cancelled so reset timer
 			wbItem.delay = time.Duration(wb.opt.WriteBack)
 		} else {
+			wb.failures.Add(1)
+			if !wbItem.failed {
+				wb.failed++
+				wbItem.failed = true
+			}
 			fs.Errorf(wbItem.name, "vfs cache: failed to upload try #%d, will retry in %v: %v", wbItem.tries, wbItem.delay, err)
 		}
 		// push the item back on the queue for retry
@@ -468,6 +480,18 @@ func (wb *WriteBack) Stats() (uploadsInProgress, uploadsQueued int) {
 	wb.mu.Lock()
 	defer wb.mu.Unlock()
 	return wb.uploads, len(wb.items)
+}
+
+// Failures returns the cumulative number of non-cancellation upload failures.
+func (wb *WriteBack) Failures() uint64 {
+	return wb.failures.Load()
+}
+
+// Failed returns the number of items whose latest upload attempt failed.
+func (wb *WriteBack) Failed() int {
+	wb.mu.Lock()
+	defer wb.mu.Unlock()
+	return wb.failed
 }
 
 // QueueInfo is information about an item queued for upload, returned

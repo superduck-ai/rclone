@@ -370,6 +370,15 @@ func (d *Dir) _age(when time.Time) (age time.Duration, stale bool) {
 //
 // path should be the desired path
 func (d *Dir) renameTree(dirPath string) {
+	files := d.renameTreeLocked(dirPath)
+	for _, file := range files {
+		file.refreshObject()
+	}
+}
+
+// renameTreeLocked updates cached paths and returns files whose objects need
+// refreshing after all directory locks have been released.
+func (d *Dir) renameTreeLocked(dirPath string) (files []*File) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -386,13 +395,16 @@ func (d *Dir) renameTree(dirPath string) {
 	for leaf, node := range d.items {
 		switch x := node.(type) {
 		case *Dir:
-			x.renameTree(path.Join(dirPath, leaf))
+			files = append(files, x.renameTreeLocked(path.Join(dirPath, leaf))...)
 		case *File:
-			x.renameDir(dirPath)
+			if x.renameDir(dirPath) {
+				files = append(files, x)
+			}
 		default:
 			panic("bad dir entry")
 		}
 	}
+	return files
 }
 
 // rename should be called after the directory is renamed
@@ -400,8 +412,6 @@ func (d *Dir) renameTree(dirPath string) {
 // Reset the directory to new state, discarding all the objects and
 // reading everything again
 func (d *Dir) rename(newParent *Dir, fsDir fs.Directory) {
-	d.ForgetAll()
-
 	d.modTimeMu.Lock()
 	d.modTime = fsDir.ModTime(d.vfs.ctx)
 	d.modTimeMu.Unlock()
@@ -425,6 +435,10 @@ func (d *Dir) rename(newParent *Dir, fsDir fs.Directory) {
 			fs.Infof(d, "Dir.Rename failed in Cache: %v", err)
 		}
 	}
+
+	// Forget the children only after updating them so inode references held by
+	// the kernel continue to use the new paths after the directory move.
+	d.ForgetAll()
 }
 
 // convert path to name

@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+package anthropic.filestore.v1alpha;
+
+option go_package = "github.com/rclone/rclone/backend/filestore/api";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+message AuthorizationMetadata {
+  string intent = 1;
+  bool downloadable = 2;
+}
+
+message File {
+  string uuid = 1;
+  google.protobuf.Timestamp created_at = 2;
+  int64 size = 3;
+  string media_type = 4;
+  google.protobuf.Struct metadata = 5;
+  string md5 = 6;
+  string workspace_tagged_id = 7;
+  string detected_mime_type = 8;
+  bool downloadable = 9;
+  repeated string tags = 10;
+  optional string filesystem_id = 11;
+  optional google.protobuf.Timestamp expires_at = 12;
+}
+
+message FilesystemFile {
+  File file = 1;
+  string filesystem_id = 2;
+  string path = 3;
+}
+
+message Directory {
+  string filesystem_id = 1;
+  string path = 2;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message MakeDirectoryRequest {
+  string filesystem_id = 1;
+  string path = 2;
+  bool make_parents = 3;
+}
+
+message MakeDirectoryResponse {
+  Directory directory = 1;
+}
+
+message ListDirectoryRequest {
+  string filesystem_id = 1;
+  string path = 2;
+  int64 limit = 3;
+  string cursor = 4;
+  bool recursive = 5;
+}
+
+message ListDirectoryResponse {
+  message Entry {
+    oneof entry {
+      FilesystemFile file = 1;
+      Directory directory = 2;
+    }
+  }
+
+  repeated Entry entries = 1;
+  string cursor = 2;
+}
+
+message MoveDirectoryRequest {
+  string filesystem_id = 1;
+  string source = 2;
+  string destination = 3;
+}
+
+message MoveDirectoryResponse {
+  Directory directory = 1;
+}
+
+message RemoveDirectoryRequest {
+  string filesystem_id = 1;
+  string path = 2;
+  bool recursive = 3;
+}
+
+message RemoveDirectoryResponse {}
+
+message CreateFileRequest {
+  message Params {
+    string filesystem_id = 1;
+    string path = 2;
+    google.protobuf.Struct metadata = 3;
+    string media_type = 4;
+    AuthorizationMetadata authorization_metadata = 5;
+    repeated string tags = 6;
+    bool overwrite_existing = 7;
+    int64 ttl_seconds = 8;
+  }
+}
+
+message CreateFileResponse {
+  FilesystemFile file = 1;
+}
+
+message ReadFileRequest {
+  message Range {
+    int64 offset = 1;
+    int64 length = 2;
+  }
+
+  string filesystem_id = 1;
+  string path = 2;
+  optional Range range = 3;
+}
+
+message ReadMetadataRequest {
+  string filesystem_id = 1;
+  string path = 2;
+}
+
+message ReadMetadataResponse {
+  oneof entry {
+    FilesystemFile file = 1;
+    Directory directory = 2;
+  }
+}
+
+message CopyFileRequest {
+  string filesystem_id = 1;
+  string source = 2;
+  string destination = 3;
+  bool overwrite_existing = 4;
+}
+
+message CopyFileResponse {
+  FilesystemFile file = 1;
+}
+
+message MoveFileRequest {
+  string filesystem_id = 1;
+  string source = 2;
+  string destination = 3;
+  bool overwrite_existing = 4;
+}
+
+message MoveFileResponse {
+  FilesystemFile file = 1;
+}
+
+message RemoveFileRequest {
+  string filesystem_id = 1;
+  string path = 2;
+}
+
+message RemoveFileResponse {}

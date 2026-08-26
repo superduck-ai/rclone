@@ -85,7 +85,11 @@ func New(ctx context.Context, fremote fs.Fs, opt *vfscommon.Options, avFn AddVir
 	// Care must be taken when creating OS paths so that the ':' separator following a
 	// drive letter is not encoded (e.g. into unicode fullwidth colon).
 	var err error
-	parentOSPath := config.GetCacheDir() // Assuming string contains a local absolute path in OS encoding
+	parentOSPath := opt.CacheDir
+	if parentOSPath == "" {
+		parentOSPath = config.GetCacheDir()
+	}
+	// parentOSPath contains a local absolute path in OS encoding.
 	fs.Debugf(fremote, "vfs cache: root is %q", parentOSPath)
 	parentPath := fromOSPath(parentOSPath)
 
@@ -161,6 +165,8 @@ func (c *Cache) Stats() (out rc.Params) {
 	uploadsInProgress, uploadsQueued := c.writeback.Stats()
 	out["uploadsInProgress"] = uploadsInProgress
 	out["uploadsQueued"] = uploadsQueued
+	out["uploadErrors"] = c.writeback.Failures()
+	out["uploadFailedFiles"] = c.writeback.Failed()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -721,7 +727,11 @@ func (c *Cache) minFreeSpaceQuotaOK() bool {
 	if c.opt.CacheMinFreeSpace <= 0 {
 		return true
 	}
-	du, err := diskusage.New(config.GetCacheDir())
+	parentOSPath := c.opt.CacheDir
+	if parentOSPath == "" {
+		parentOSPath = config.GetCacheDir()
+	}
+	du, err := diskusage.New(parentOSPath)
 	if err == diskusage.ErrUnsupported {
 		return true
 	}

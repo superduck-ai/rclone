@@ -4,6 +4,8 @@
 package mount2
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"time"
@@ -15,9 +17,18 @@ import (
 	"github.com/rclone/rclone/vfs"
 )
 
+var mountCommand = mountlib.NewMountCommand("mount2", true, mount)
+
 func init() {
-	mountlib.NewMountCommand("mount2", true, mount)
 	mountlib.AddRc("mount2", mount)
+}
+
+// DisableCommandAndRC removes the generic mount2 entry points while retaining Mount for direct callers.
+func DisableCommandAndRC() {
+	if parent := mountCommand.Parent(); parent != nil {
+		parent.RemoveCommand(mountCommand)
+	}
+	mountlib.AddRc("mount2", nil)
 }
 
 // mountOptions configures the options from the command line flags
@@ -34,6 +45,8 @@ func mountOptions(fsys *FS, f fs.Fs, opt *mountlib.Options) (mountOpts *fuse.Mou
 		MaxWrite:           1024 * 1024, // Linux v4.20+ caps requests at 1 MiB
 		DisableReadDirPlus: true,
 		IDMappedMount:      opt.AllowIDMap,
+		DirectMount:        opt.DirectMountStrict,
+		DirectMountStrict:  opt.DirectMountStrict,
 
 		// RememberInodes: true,
 		// SingleThreaded: true,
@@ -185,7 +198,10 @@ func mountOptions(fsys *FS, f fs.Fs, opt *mountlib.Options) (mountOpts *fuse.Mou
 //
 // returns an error, and an error channel for the serve process to
 // report an error when fusermount is called.
-func mount(VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error, func() error, string, error) {
+func mountContext(ctx context.Context, VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error, func() error, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, "", err
+	}
 	f := VFS.Fs()
 	if err := mountlib.CheckOverlap(f, mountpoint); err != nil {
 		return nil, nil, "", err
@@ -241,7 +257,14 @@ func mount(VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error
 	// }
 
 	umount := func() error {
-		// Shutdown the VFS
+		if opt.DirectMountStrict {
+			fsys.VFS.WaitForWriters(30 * time.Second)
+			if err := server.Unmount(); err != nil {
+				return fmt.Errorf("unmounting FUSE: %w", err)
+			}
+			fsys.VFS.Shutdown()
+			return nil
+		}
 		fsys.VFS.Shutdown()
 		return server.Unmount()
 	}
@@ -257,11 +280,40 @@ func mount(VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error
 	}()
 
 	fs.Debugf(f, "Waiting for the mount to start...")
-	err = server.WaitMount()
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- server.WaitMount()
+	}()
+	select {
+	case err = <-waitDone:
+	case <-ctx.Done():
+		err = errors.Join(ctx.Err(), server.Unmount())
+	}
 	if err != nil {
+		_ = server.Unmount()
+		if opt.DirectMountStrict {
+			return nil, nil, "", fmt.Errorf("waiting for mount: %w", err)
+		}
 		return nil, nil, "", err
 	}
 
 	fs.Debugf(f, "Mount started")
 	return errs, umount, mountpoint, nil
+}
+
+func mount(VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error, func() error, string, error) {
+	return mountContext(context.Background(), VFS, mountpoint, opt)
+}
+
+// Mount mounts VFS on mountpoint using go-fuse.
+//
+// The returned channel reports termination of the FUSE server and the returned
+// function unmounts the filesystem.
+func Mount(VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error, func() error, string, error) {
+	return mount(VFS, mountpoint, opt)
+}
+
+// MountWithContext mounts VFS and cancels its readiness wait when ctx ends.
+func MountWithContext(ctx context.Context, VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error, func() error, string, error) {
+	return mountContext(ctx, VFS, mountpoint, opt)
 }
