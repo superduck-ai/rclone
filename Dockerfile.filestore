@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
+ARG GO_IMAGE=docker.io/library/golang@sha256:e17419604b6d1f9bc245694425f0ec9b1b53685c80850900a376fb10cb0f70cb
+
+FROM --platform=$TARGETPLATFORM ${GO_IMAGE} AS builder
+
+ARG TARGETARCH
+ARG GO_VERSION=1.25.4
+ARG GOAMD64_LEVEL=v3
+ARG GOARM64_LEVEL=v8.0
+ARG RCLONE_FILESTORE_VERSION=dev
+ARG BUILD_GIT_HASH=unknown
+ARG BUILD_TIME=unknown
+
+WORKDIR /workspace
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends binutils file gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && test "$(go version | awk '{print $3}')" = "go${GO_VERSION}"
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,id=rclone-filestore-go-mod,target=/go/pkg/mod,sharing=locked \
+    go mod download \
+    && go mod verify
+
+COPY . .
+
+RUN --mount=type=cache,id=rclone-filestore-go-mod,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,id=rclone-filestore-go-build-$TARGETARCH,target=/root/.cache/go-build,sharing=locked \
+    export CGO_ENABLED=1 GOOS=linux GOARCH="$TARGETARCH" \
+    && case "$TARGETARCH" in \
+      amd64) export GOAMD64="$GOAMD64_LEVEL" ;; \
+      arm64) export GOARM64="$GOARM64_LEVEL" ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && go test ./backend/filestore ./cmd/multimount ./cmd/rclone-filestore \
+    && go build -trimpath -o /out/rclone-filestore ./cmd/rclone-filestore \
+    && /out/rclone-filestore --help >/dev/null \
+    && file /out/rclone-filestore \
+    && readelf -hW /out/rclone-filestore \
+    && readelf -dW /out/rclone-filestore \
+    && case "$TARGETARCH" in \
+      amd64) readelf -hW /out/rclone-filestore | grep -Fq 'Advanced Micro Devices X86-64' ;; \
+      arm64) readelf -hW /out/rclone-filestore | grep -Fq 'AArch64' ;; \
+    esac \
+    && highest_glibc="$(readelf --version-info -W /out/rclone-filestore \
+      | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -Vu | tail -n 1)" \
+    && test -n "$highest_glibc" \
+    && test "$(printf '%s\n%s\n' GLIBC_2.34 "$highest_glibc" | sort -Vu | tail -n 1)" = GLIBC_2.34
+
+FROM scratch AS artifact
+
+ARG RCLONE_FILESTORE_VERSION=dev
+ARG BUILD_GIT_HASH=unknown
+ARG BUILD_TIME=unknown
+
+COPY --from=builder /out/rclone-filestore /opt/rclone/rclone-filestore
+
+LABEL org.opencontainers.image.title="rclone-filestore" \
+      org.opencontainers.image.description="OMA Filestore multimount binary artifact" \
+      org.opencontainers.image.version="$RCLONE_FILESTORE_VERSION" \
+      org.opencontainers.image.revision="$BUILD_GIT_HASH" \
+      org.opencontainers.image.created="$BUILD_TIME"
+
+# Local-only userspace for executing the extracted binary. It intentionally
+# reuses the pinned GO_IMAGE, including its Go toolchain, to avoid another base
+# image and digest. This stage is loaded only for verification and is never
+# copied into the published scratch artifact.
+FROM --platform=$TARGETPLATFORM ${GO_IMAGE} AS verification-runtime
