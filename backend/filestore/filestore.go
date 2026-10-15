@@ -108,15 +108,21 @@ func init() {
 	})
 }
 
+// newHTTPTransport only speaks HTTP/1.1 so streamed multipart uploads are
+// sent with chunked transfer encoding. Some proxies downgrade HTTP/2 requests
+// without a content length to HTTP/1.1 and drop the body framing, which
+// makes the service reject the upload.
 func newHTTPTransport() *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   5 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
 	return &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           dialer.DialContext,
-		ForceAttemptHTTP2:     true,
+		Protocols:             protocols,
 		MaxIdleConns:          20,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,

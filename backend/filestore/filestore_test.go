@@ -89,7 +89,10 @@ func TestNewFsMatchesRecoveredConfiguration(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 20, transport.MaxIdleConns)
 	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
-	assert.True(t, transport.ForceAttemptHTTP2)
+	assert.False(t, transport.ForceAttemptHTTP2)
+	require.NotNil(t, transport.Protocols)
+	assert.True(t, transport.Protocols.HTTP1())
+	assert.False(t, transport.Protocols.HTTP2())
 	assert.Equal(t, 30*time.Minute, f.client.Timeout)
 	assert.Nil(t, f.client.CheckRedirect)
 
@@ -366,6 +369,27 @@ func TestPutMultipartAndRawError(t *testing.T) {
 	_, err = errorFs.Put(context.Background(), strings.NewReader(content), src)
 	require.EqualError(t, err, `upload of /outputs/file.txt failed: API error 503: {"code":"not_found","message":"raw upload error"}`)
 	assert.Equal(t, int32(1), errorCalls.Load())
+}
+
+func TestPutStreamsChunkedOverHTTP1WhenServerOffersHTTP2(t *testing.T) {
+	const content = "hello filestore"
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, "HTTP/1.1", request.Proto)
+		assert.Equal(t, int64(-1), request.ContentLength)
+		assert.Equal(t, []string{"chunked"}, request.TransferEncoding)
+		require.NoError(t, request.ParseMultipartForm(1<<20))
+		assert.NotEmpty(t, request.FormValue("params"))
+		writeJSON(t, response, metadataResponse("/outputs/file.txt", "2026-07-21T03:04:05Z", "RAW", len(content)))
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	f := newTestFs(t, server.URL, "/outputs", testFilesystemID, "token")
+	transport := f.client.Transport.(*http.Transport)
+	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	src := object.NewStaticObjectInfo("file.txt", time.Now(), int64(len(content)), true, nil, f)
+	_, err := f.Put(context.Background(), strings.NewReader(content), src)
+	require.NoError(t, err)
 }
 
 func TestUpdateOnlyCopiesRecoveredMetadataFields(t *testing.T) {
